@@ -43,6 +43,8 @@ type Importer struct {
 	Name           string
 	VerifyManifest bool
 	Hidden         bool
+	PullMode       bool
+	Thumbprint     string
 
 	Client *vim25.Client
 	Finder *find.Finder
@@ -75,7 +77,6 @@ func (imp *Importer) ReadManifest(fpath string) error {
 }
 
 func (imp *Importer) Import(ctx context.Context, fpath string, opts Options) (*types.ManagedObjectReference, error) {
-
 	o, err := ReadOvf(fpath, imp.Archive)
 	if err != nil {
 		return nil, err
@@ -164,12 +165,29 @@ func (imp *Importer) Import(ctx context.Context, fpath string, opts Options) (*t
 		return nil, err
 	}
 
-	u := lease.StartUpdater(ctx, info)
-	defer u.Done()
+	if imp.PullMode {
+		var ovaUrl string
+		if ovaArchive, ok := imp.Archive.(*TapeArchive); ok {
+			ovaUrl = ovaArchive.Path
+		}
 
-	for _, i := range info.Items {
-		if err := imp.Upload(ctx, lease, i); err != nil {
+		err = lease.Upgrade(ctx, ovaUrl, imp.Thumbprint, info.Items)
+		if err != nil {
 			return nil, err
+		}
+
+		err = lease.WaitForPull(ctx)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		u := lease.StartUpdater(ctx, info)
+		defer u.Done()
+
+		for _, i := range info.Items {
+			if err := imp.Upload(ctx, lease, i); err != nil {
+				return nil, err
+			}
 		}
 	}
 

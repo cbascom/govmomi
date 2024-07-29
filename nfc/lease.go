@@ -18,6 +18,7 @@ package nfc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -99,6 +100,21 @@ func (l *Lease) Progress(ctx context.Context, percent int32) error {
 	return nil
 }
 
+// PullFromUrls_Task wraps methods.PullFromUrls_Task
+func (l *Lease) PullFromUrls_Task(ctx context.Context, files []types.HttpNfcLeaseSourceFile) error {
+	req := types.HttpNfcLeasePullFromUrls_Task{
+		This:  l.Reference(),
+		Files: files,
+	}
+
+	_, err := methods.HttpNfcLeasePullFromUrls_Task(ctx, l.c, &req)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 type LeaseInfo struct {
 	types.HttpNfcLeaseInfo
 
@@ -158,6 +174,18 @@ func (l *Lease) newLeaseInfo(li *types.HttpNfcLeaseInfo, items []types.OvfFileIt
 	return info, nil
 }
 
+func (l *Lease) GetCapabilities(ctx context.Context) (*types.HttpNfcLeaseCapabilities, error) {
+	var capabilities types.HttpNfcLeaseCapabilities
+
+	pc := property.DefaultCollector(l.c)
+	err := pc.RetrieveOne(ctx, l.Reference(), []string{"capabilities"}, &capabilities)
+	if err != nil {
+		return nil, err
+	}
+
+	return &capabilities, nil
+}
+
 func (l *Lease) Wait(ctx context.Context, items []types.OvfFileItem) (*LeaseInfo, error) {
 	var lease mo.HttpNfcLease
 
@@ -202,6 +230,71 @@ func (l *Lease) Wait(ctx context.Context, items []types.OvfFileItem) (*LeaseInfo
 	}
 
 	return nil, fmt.Errorf("unexpected nfc lease state: %s", lease.State)
+}
+
+func (l *Lease) Upgrade(ctx context.Context, ovaUrl, sslThumbprint string, fileItems []FileItem) error {
+	capabilities, err := l.GetCapabilities(ctx)
+	if err != nil {
+		return err
+	}
+
+	if !capabilities.PullModeSupported {
+		return errors.New("nfc lease does not support pull mode")
+	}
+
+	var sourceFiles []types.HttpNfcLeaseSourceFile
+	for _, fileItem := range fileItems {
+		sourceFile := types.HttpNfcLeaseSourceFile{
+			TargetDeviceId: fileItem.DeviceId,
+			Url:            fileItem.URL.String(),
+			Create:         fileItem.Create,
+			SslThumbprint:  sslThumbprint,
+		}
+
+		if ovaUrl == "" {
+			sourceFile.Url = ovaUrl
+			sourceFile.MemberName = fileItem.Path
+		}
+
+		sourceFiles = append(sourceFiles, sourceFile)
+	}
+
+	return l.PullFromUrls_Task(ctx, sourceFiles)
+}
+
+func (l *Lease) WaitForPull(ctx context.Context) error {
+	var lease mo.HttpNfcLease
+
+	pc := property.DefaultCollector(l.c)
+	err := property.Wait(ctx, pc, l.Reference(), []string{"transferProgress", "error"}, func(pc []types.PropertyChange) bool {
+		done := false
+
+		for _, c := range pc {
+			if c.Val == nil {
+				continue
+			}
+
+			switch c.Name {
+			case "error":
+				val := c.Val.(types.LocalizedMethodFault)
+				lease.Error = &val
+				done = true
+			case "transferProgress":
+				val := c.Val.(int32)
+				if val == 100 {
+					done = true
+				}
+			}
+		}
+
+		return done
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (l *Lease) StartUpdater(ctx context.Context, info *LeaseInfo) *LeaseUpdater {
