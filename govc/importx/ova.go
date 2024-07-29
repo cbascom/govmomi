@@ -35,7 +35,7 @@ func init() {
 }
 
 func (cmd *ova) Usage() string {
-	return "PATH_TO_OVA"
+	return "PATH_OR_URL_TO_OVA"
 }
 
 func (cmd *ova) Run(ctx context.Context, f *flag.FlagSet) error {

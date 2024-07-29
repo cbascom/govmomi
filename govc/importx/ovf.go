@@ -61,6 +61,8 @@ func (cmd *ovfx) Register(ctx context.Context, f *flag.FlagSet) {
 	f.StringVar(&cmd.Importer.Name, "name", "", "Name to use for new entity")
 	f.BoolVar(&cmd.Importer.VerifyManifest, "m", false, "Verify checksum of uploaded files against manifest (.mf)")
 	f.BoolVar(&cmd.Importer.Hidden, "hidden", false, "Enable hidden properties")
+	f.BoolVar(&cmd.Importer.PullMode, "pull-mode", false, "Enable pull mode if available")
+	f.StringVar(&cmd.Importer.Thumbprint, "thumbprint", "", "Thumbprint of host to pull the OVA or OVF from")
 }
 
 func (cmd *ovfx) Process(ctx context.Context) error {
@@ -86,7 +88,7 @@ func (cmd *ovfx) Process(ctx context.Context) error {
 }
 
 func (cmd *ovfx) Usage() string {
-	return "PATH_TO_OVF"
+	return "PATH_OR_URL_TO_OVF"
 }
 
 func (cmd *ovfx) Run(ctx context.Context, f *flag.FlagSet) error {
@@ -114,7 +116,11 @@ func (cmd *ovfx) Prepare(f *flag.FlagSet) (string, error) {
 
 	args := f.Args()
 	if len(args) != 1 {
-		return "", errors.New("no file specified")
+		return "", errors.New("no file or url specified")
+	}
+
+	if cmd.Importer.PullMode && cmd.Importer.Thumbprint == "" {
+		return "", errors.New("thumbprint must be specified when pull-mode is enabled")
 	}
 
 	cmd.Importer.Log = cmd.OutputFlag.Log

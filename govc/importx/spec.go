@@ -59,7 +59,7 @@ func (cmd *spec) Process(ctx context.Context) error {
 }
 
 func (cmd *spec) Usage() string {
-	return "PATH_TO_OVF_OR_OVA"
+	return "PATH_OR_URL_TO_OVF_OR_OVA"
 }
 
 func (cmd *spec) Run(ctx context.Context, f *flag.FlagSet) error {
