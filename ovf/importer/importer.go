@@ -24,6 +24,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/vmware/govmomi/find"
@@ -160,6 +161,7 @@ func (imp *Importer) Import(ctx context.Context, fpath string, opts Options) (*t
 		return nil, err
 	}
 
+	fmt.Printf("Waiting for lease ready with file items %v\n", spec.FileItem)
 	info, err := lease.Wait(ctx, spec.FileItem)
 	if err != nil {
 		return nil, err
@@ -167,16 +169,20 @@ func (imp *Importer) Import(ctx context.Context, fpath string, opts Options) (*t
 
 	if imp.PullMode {
 		var ovaUrl string
+		fmt.Printf("Archive type is %s\n", reflect.TypeOf(imp.Archive))
 		if ovaArchive, ok := imp.Archive.(*TapeArchive); ok {
+			fmt.Printf("Setting ovaUrl to %s\n", ovaArchive.Path)
 			ovaUrl = ovaArchive.Path
 		}
 
-		err = lease.Upgrade(ctx, ovaUrl, imp.Thumbprint, info.Items)
+		fmt.Printf("Upgrading lease using thumbprint %s and file items %v\n", imp.Thumbprint, info.Items)
+		task, err := lease.Upgrade(ctx, ovaUrl, imp.Thumbprint, info.Items)
 		if err != nil {
 			return nil, err
 		}
 
-		err = lease.WaitForPull(ctx)
+		fmt.Println("Waiting for files to be pulled")
+		err = lease.WaitForTask(ctx, task)
 		if err != nil {
 			return nil, err
 		}

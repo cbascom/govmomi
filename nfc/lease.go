@@ -101,18 +101,18 @@ func (l *Lease) Progress(ctx context.Context, percent int32) error {
 }
 
 // PullFromUrls_Task wraps methods.PullFromUrls_Task
-func (l *Lease) PullFromUrls_Task(ctx context.Context, files []types.HttpNfcLeaseSourceFile) error {
+func (l *Lease) PullFromUrls_Task(ctx context.Context, files []types.HttpNfcLeaseSourceFile) (types.ManagedObjectReference, error) {
 	req := types.HttpNfcLeasePullFromUrls_Task{
 		This:  l.Reference(),
 		Files: files,
 	}
 
-	_, err := methods.HttpNfcLeasePullFromUrls_Task(ctx, l.c, &req)
+	resp, err := methods.HttpNfcLeasePullFromUrls_Task(ctx, l.c, &req)
 	if err != nil {
-		return err
+		return types.ManagedObjectReference{}, err
 	}
 
-	return nil
+	return resp.Returnval, nil
 }
 
 type LeaseInfo struct {
@@ -175,15 +175,15 @@ func (l *Lease) newLeaseInfo(li *types.HttpNfcLeaseInfo, items []types.OvfFileIt
 }
 
 func (l *Lease) GetCapabilities(ctx context.Context) (*types.HttpNfcLeaseCapabilities, error) {
-	var capabilities types.HttpNfcLeaseCapabilities
+	var httpNfcLease mo.HttpNfcLease
 
 	pc := property.DefaultCollector(l.c)
-	err := pc.RetrieveOne(ctx, l.Reference(), []string{"capabilities"}, &capabilities)
+	err := pc.RetrieveOne(ctx, l.Reference(), []string{"capabilities"}, &httpNfcLease)
 	if err != nil {
 		return nil, err
 	}
 
-	return &capabilities, nil
+	return &httpNfcLease.Capabilities, nil
 }
 
 func (l *Lease) Wait(ctx context.Context, items []types.OvfFileItem) (*LeaseInfo, error) {
@@ -232,18 +232,20 @@ func (l *Lease) Wait(ctx context.Context, items []types.OvfFileItem) (*LeaseInfo
 	return nil, fmt.Errorf("unexpected nfc lease state: %s", lease.State)
 }
 
-func (l *Lease) Upgrade(ctx context.Context, ovaUrl, sslThumbprint string, fileItems []FileItem) error {
+func (l *Lease) Upgrade(ctx context.Context, ovaUrl, sslThumbprint string, fileItems []FileItem) (types.ManagedObjectReference, error) {
 	capabilities, err := l.GetCapabilities(ctx)
 	if err != nil {
-		return err
+		return types.ManagedObjectReference{}, err
 	}
 
 	if !capabilities.PullModeSupported {
-		return errors.New("nfc lease does not support pull mode")
+		return types.ManagedObjectReference{}, errors.New("the HttpNfcLease does not support pull mode")
 	}
 
 	var sourceFiles []types.HttpNfcLeaseSourceFile
+	fmt.Printf("Creating %d source file(s)\n", len(fileItems))
 	for _, fileItem := range fileItems {
+		fmt.Printf("Creating source file for file item %v with URL %s\n", fileItem, fileItem.URL.String())
 		sourceFile := types.HttpNfcLeaseSourceFile{
 			TargetDeviceId: fileItem.DeviceId,
 			Url:            fileItem.URL.String(),
@@ -251,7 +253,8 @@ func (l *Lease) Upgrade(ctx context.Context, ovaUrl, sslThumbprint string, fileI
 			SslThumbprint:  sslThumbprint,
 		}
 
-		if ovaUrl == "" {
+		if ovaUrl != "" {
+			fmt.Printf("Setting source file URL to %s and member name to %s\n", ovaUrl, fileItem.Path)
 			sourceFile.Url = ovaUrl
 			sourceFile.MemberName = fileItem.Path
 		}
@@ -260,6 +263,49 @@ func (l *Lease) Upgrade(ctx context.Context, ovaUrl, sslThumbprint string, fileI
 	}
 
 	return l.PullFromUrls_Task(ctx, sourceFiles)
+}
+
+func (l *Lease) WaitForTask(ctx context.Context, task types.ManagedObjectReference) error {
+	var lease mo.HttpNfcLease
+
+	pc := property.DefaultCollector(l.c)
+	err := property.Wait(ctx, pc, task, []string{"info.progress", "info.state", "info.error"}, func(pc []types.PropertyChange) bool {
+		done := false
+
+		for _, c := range pc {
+			if c.Val == nil {
+				continue
+			}
+
+			switch c.Name {
+			case "info.state":
+				val := c.Val.(types.TaskInfoState)
+				fmt.Printf("Task state updated to %s\n", val)
+				if val == types.TaskInfoStateSuccess || val == types.TaskInfoStateError {
+					done = true
+				}
+			case "info.error":
+				val := c.Val.(types.LocalizedMethodFault)
+				fmt.Printf("Task encountered error %v\n", val)
+				lease.Error = &val
+				done = true
+			case "info.progress":
+				val := c.Val.(int32)
+				fmt.Printf("Task progress updated to %d\n", val)
+				if val == 100 {
+					done = true
+				}
+			}
+		}
+
+		return done
+	})
+
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (l *Lease) WaitForPull(ctx context.Context) error {
